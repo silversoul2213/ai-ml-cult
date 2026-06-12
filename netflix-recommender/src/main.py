@@ -18,12 +18,33 @@ import platform
 import subprocess
 
 import numpy as np
+from scipy.optimize import nnls
 
 from .data_loader import load_dataset, synthetic_ratings, train_test_split_temporal
 from .eda import run_eda
 from .models import MODEL_REGISTRY
 from .evaluate import evaluate_model
 from .recommend import sample_recommendation_report
+
+
+class EnsembleModel:
+    """Stacked blend of base models with non-negative weights.
+
+    Weights are learned on a held-out validation slice (NNLS), so the ensemble
+    is a proper out-of-fold stack rather than a fit on the training residual.
+    """
+    name = "Ensemble (stacked blend)"
+
+    def __init__(self, base_models, weights):
+        self.base_models = base_models
+        self.weights = np.asarray(weights, dtype=float)
+
+    def predict_batch(self, users, movies):
+        cols = [m.predict_batch(users, movies) for m in self.base_models]
+        return np.clip(np.column_stack(cols) @ self.weights, 1.0, 5.0)
+
+    def predict(self, user_id, movie_id):
+        return float(self.predict_batch([user_id], [movie_id])[0])
 
 
 def _git_commit() -> str:
@@ -66,10 +87,10 @@ def main(argv=None):
 
     # 1. load
     if args.synthetic:
-        print("[1/5] Loading SYNTHETIC dataset ...")
+        print("[1/6] Loading SYNTHETIC dataset ...")
         dataset = synthetic_ratings(seed=args.seed)
     else:
-        print("[1/5] Loading dataset ...")
+        print("[1/6] Loading dataset ...")
         dataset = load_dataset(
             args.data_dir, files=args.files, sample_users=args.sample_users,
             min_ratings_per_user=args.min_ratings_per_user, seed=args.seed,
@@ -78,26 +99,33 @@ def main(argv=None):
           f"ratings={len(dataset.ratings):,}")
 
     # 2. EDA
-    print("[2/5] Running EDA ...")
+    print("[2/6] Running EDA ...")
     insights = run_eda(dataset, args.out)
     print(f"      sparsity={insights['sparsity']:.5f}  "
           f"mean_rating={insights['mean_rating']}")
 
-    # 3. split
-    print("[3/5] Train/test split (per-user temporal hold-out) ...")
+    # 3. split (train/test), then carve a validation slice from train used for
+    #    MF early-stopping and for learning the ensemble's blend weights.
+    print("[3/6] Train/test split (per-user temporal hold-out) ...")
     train, test = train_test_split_temporal(
         dataset.ratings, test_frac=args.test_frac, seed=args.seed)
-    print(f"      train={len(train):,}  test={len(test):,}")
+    train_fit, val = train_test_split_temporal(train, test_frac=0.1, seed=args.seed)
+    print(f"      train={len(train):,}  (fit={len(train_fit):,} val={len(val):,})  "
+          f"test={len(test):,}")
 
-    # 4. train + evaluate each model
-    print("[4/5] Training & evaluating models ...")
+    # 4. train + evaluate each base model (fitted on train_fit; the held-out val
+    #    slice is reserved for early-stopping/blending, evaluation is on test).
+    print("[4/6] Training & evaluating base models ...")
     metrics = {}
     fitted = {}
     for name in args.models:
         print(f"  -> {name}")
         model = build_model(name, args.seed)
         ts = time.time()
-        model.fit(train)
+        if name == "mf":
+            model.fit(train_fit, valid=val)
+        else:
+            model.fit(train_fit)
         fit_time = time.time() - ts
         res = evaluate_model(
             model, train, test, k=args.top_k, relevance=args.relevance,
@@ -111,11 +139,35 @@ def main(argv=None):
               f"MAP@{args.top_k}={res[f'MAP@{args.top_k}']:.4f}  "
               f"({fit_time:.1f}s)")
 
+    # 4b. stacked ensemble: learn non-negative blend weights on the val slice.
+    if len(args.models) >= 2:
+        print("[5/6] Building stacked ensemble (NNLS blend on val) ...")
+        ts = time.time()
+        base_list = [fitted[n] for n in args.models]
+        vu, vm = val["user_id"].to_numpy(), val["movie_id"].to_numpy()
+        vr = val["rating"].to_numpy(dtype=float)
+        preds_val = np.column_stack([m.predict_batch(vu, vm) for m in base_list])
+        weights, _ = nnls(preds_val, vr)
+        ens = EnsembleModel(base_list, weights)
+        res = evaluate_model(
+            ens, train, test, k=args.top_k, relevance=args.relevance,
+            max_users=args.eval_max_users, seed=args.seed,
+        )
+        res["fit_time_sec"] = round(time.time() - ts, 2)
+        res["model_name"] = ens.name
+        res["weights"] = {args.models[i]: round(float(weights[i]), 4)
+                          for i in range(len(args.models))}
+        metrics["ensemble"] = res
+        fitted["ensemble"] = ens
+        print(f"     weights={res['weights']}")
+        print(f"     RMSE={res['RMSE']:.4f}  "
+              f"MAP@{args.top_k}={res[f'MAP@{args.top_k}']:.4f}")
+
     with open(os.path.join(args.out, "metrics.json"), "w") as fh:
         json.dump(metrics, fh, indent=2, default=str)
 
-    # 5. recommendations from the best model (lowest RMSE)
-    print("[5/5] Generating sample recommendations ...")
+    # 6. recommendations from the best model (lowest RMSE)
+    print("[6/6] Generating sample recommendations ...")
     best = min(metrics, key=lambda m: metrics[m]["RMSE"])
     print(f"      best-by-RMSE model: {best}")
     rec_report = sample_recommendation_report(

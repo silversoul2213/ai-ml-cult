@@ -52,14 +52,30 @@ class ItemItemCF:
         mat = sparse.csr_matrix(
             (vals, (rows, cols)), shape=(len(self.movie_ids), len(users))
         )
-        sims = cosine_similarity(mat, dense_output=False)
+        sims = cosine_similarity(mat, dense_output=False).tolil()
 
-        # keep top-k neighbours per item
-        sims = sims.tolil()
+        # co-rating counts: how many users rated BOTH items. A high cosine built
+        # on only 2-3 shared users is unreliable, so we (a) drop pairs below
+        # `min_overlap` and (b) apply significance shrinkage
+        # sim' = sim * n_ij / (n_ij + shrinkage), pulling thin overlaps toward 0.
+        binary = sparse.csr_matrix(
+            (np.ones(len(rows)), (rows, cols)),
+            shape=(len(self.movie_ids), len(users)),
+        )
+        co = (binary @ binary.T).tocsr()
+
+        # keep top-k neighbours per item (shrunk + overlap-filtered)
         for i in range(sims.shape[0]):
-            row = sims.rows[i]
-            data = sims.data[i]
-            pairs = [(j, s) for j, s in zip(row, data) if j != i and s > 0]
+            co_row = co.getrow(i)
+            co_map = dict(zip(co_row.indices, co_row.data))
+            pairs = []
+            for j, s in zip(sims.rows[i], sims.data[i]):
+                if j == i or s <= 0:
+                    continue
+                n_ij = co_map.get(j, 0)
+                if n_ij < self.min_overlap:
+                    continue
+                pairs.append((j, s * n_ij / (n_ij + self.shrinkage)))
             pairs.sort(key=lambda p: p[1], reverse=True)
             self.sim_topk[self.movie_ids[i]] = [
                 (self.movie_ids[j], float(s)) for j, s in pairs[: self.k_neighbors]

@@ -16,15 +16,16 @@ evaluates them with the two mandatory metrics: **RMSE** (rating accuracy) and
 |-------|--------|--------|
 | Data loading & parsing | `src/data_loader.py` | tidy ratings DataFrame + movie titles |
 | Exploratory Data Analysis | `src/eda.py` | figures in `results/figures/`, `results/eda_insights.json` |
-| Models | `src/models/` | Global/Bias baseline, Item-Item CF, Matrix Factorization (SGD) |
+| Models | `src/models/` + `main.py` | Baseline (bias), Item-Item CF, Matrix Factorization (SGD), stacked Ensemble |
 | Evaluation | `src/evaluate.py` | RMSE + MAP@10 (+ optional MAE, Precision@K, Recall@K, NDCG) |
 | Recommendations | `src/recommend.py` | Top-K lists + human-readable explanations |
 | Orchestrator | `src/main.py` | runs the full pipeline end to end |
 
-Models (at least two, as required):
+Models (four; at least two required):
 - **BaselineModel** — global mean + user/item bias terms (strong, fast reference).
-- **ItemItemCF** — item-based collaborative filtering (cosine / adjusted-cosine).
-- **MatrixFactorization** — latent-factor SGD (the SVD-style approach that won the Prize era), with bias terms and L2 regularization.
+- **ItemItemCF** — item-based collaborative filtering, adjusted cosine with significance shrinkage and a minimum co-rating overlap.
+- **MatrixFactorization** — latent-factor SGD (the SVD-style approach of the Prize era), bias terms, L2 regularization, validation early-stopping.
+- **Ensemble (stacked blend)** — non-negative least-squares blend of the three base models, weights learned on a held-out validation slice.
 
 ---
 
@@ -107,20 +108,24 @@ netflix-recommender/
 │   ├── eda.py
 │   ├── evaluate.py
 │   ├── recommend.py
-│   ├── main.py
+│   ├── main.py                      <- orchestrator + stacked ensemble
 │   └── models/
 │       ├── __init__.py
 │       ├── baseline.py
 │       ├── item_cf.py
 │       └── matrix_factorization.py
-├── report/REPORT_TEMPLATE.md        <- 10-page technical report scaffold
-├── slides/PRESENTATION_TEMPLATE.md  <- 8-slide deck scaffold
-└── results/                         <- generated artifacts (gitignored except samples)
+├── deliverables/
+│   ├── Technical-Report.pdf         <- Deliverable 1 (≤10 pages)
+│   └── Presentation.pdf             <- Deliverable 3 (8 slides)
+└── results/                         <- generated artifacts (gitignored)
 ```
 
-## 7. Note on results in the report
+## 7. Deliverables
 
-Numbers (RMSE, MAP@10, charts) are produced by **running the code on the real
-dataset**. The report and slide templates have clearly marked `‹fill in›`
-placeholders for these — run the pipeline, then paste the values from
-`results/metrics.json` and the figures from `results/figures/`.
+The finished deliverables are in `deliverables/`:
+- **`Technical-Report.pdf`** — the 10-page technical report (Deliverable 1).
+- **`Presentation.pdf`** — the 8-slide deck (Deliverable 3).
+
+Every number and figure in them is produced by running the pipeline on the real
+dataset (`results/metrics.json`, `results/eda_insights.json`,
+`results/figures/`). Re-run the command in §4 to reproduce them exactly.

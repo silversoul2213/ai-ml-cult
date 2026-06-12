@@ -23,12 +23,14 @@ class MatrixFactorization:
     def __init__(
         self,
         n_factors: int = 50,
-        n_epochs: int = 20,
+        n_epochs: int = 30,
         lr: float = 0.005,
-        reg: float = 0.02,
+        reg: float = 0.05,
         seed: int = 42,
         verbose: bool = True,
+        patience: int = 3,
     ):
+        self.patience = patience
         self.n_factors = n_factors
         self.n_epochs = n_epochs
         self.lr = lr
@@ -65,6 +67,9 @@ class MatrixFactorization:
         r_arr = train["rating"].to_numpy(dtype=np.float64)
         n = len(r_arr)
 
+        best_valid = float("inf")
+        best_state = None
+        bad = 0
         for epoch in range(self.n_epochs):
             order = rng.permutation(n)
             sq_err = 0.0
@@ -82,11 +87,30 @@ class MatrixFactorization:
 
             rmse = np.sqrt(sq_err / n)
             self.train_rmse_history.append(rmse)
+            msg = f"  epoch {epoch + 1:2d}/{self.n_epochs}  train RMSE={rmse:.4f}"
+
+            # validation-based early stopping: keep the best epoch's parameters
+            # and stop once valid RMSE fails to improve for `patience` epochs.
+            if valid is not None:
+                v = self._rmse(valid)
+                msg += f"  valid RMSE={v:.4f}"
+                if v < best_valid - 1e-4:
+                    best_valid = v
+                    best_state = (self.bu.copy(), self.bi.copy(),
+                                  self.P.copy(), self.Q.copy())
+                    bad = 0
+                else:
+                    bad += 1
             if self.verbose:
-                msg = f"  epoch {epoch + 1:2d}/{self.n_epochs}  train RMSE={rmse:.4f}"
-                if valid is not None:
-                    msg += f"  valid RMSE={self._rmse(valid):.4f}"
                 print(msg)
+            if valid is not None and bad >= self.patience:
+                if self.verbose:
+                    print(f"  early stop at epoch {epoch + 1} "
+                          f"(best valid RMSE={best_valid:.4f})")
+                break
+
+        if best_state is not None:
+            self.bu, self.bi, self.P, self.Q = best_state
         return self
 
     def _rmse(self, df: pd.DataFrame) -> float:

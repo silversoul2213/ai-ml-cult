@@ -1,1 +1,21 @@
+# OS / editor
 .DS_Store
+
+# Netflix Prize dataset — download separately (see netflix-recommender/README.md)
+/data/
+
+# original upload archive
+*.zip
+
+# python
+.venv/
+__pycache__/
+*.pyc
+
+# local-only files
+results_run.log
+ps.md
+
+# PDF build intermediates — only the final PDFs in deliverables/ are tracked
+netflix-recommender/deliverables/*.html
+netflix-recommender/deliverables/embed.py
